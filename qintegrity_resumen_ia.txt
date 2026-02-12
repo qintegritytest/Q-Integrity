@@ -1,0 +1,43 @@
+INIT_CONTENT-84f133d9-e724-4063-a3a8-8dad6727a4dc__dueño_del_producto__REVA.docx
+#### Resultado
+
+#### 🧾 Resumen  
+Documento que define la arquitectura, stack y requisitos de un sistema de gestión de datos de construcción. Se especifica la generación de Excel como export, dashboards internos, IA contextualizada, criterios QA/QC fijos, UX moderno con calendarios y listas desplegables, gestión documental por proyecto y una interfaz profesional y clara.
+
+#### 📋 Requisitos / frases detectadas  
+- Exportar Excel por pantalla con botón “Exportar Excel – esta pantalla”.  
+- Generar dashboard automático por pantalla con botón “Ver Dashboard – esta pantalla”.  
+- IA contextualizada por proyecto activo y alcance seleccionable (EETT, normas, planos, densidades).  
+- Uso de calendarios (Date Picker) en todos los campos de fecha.  
+- Listas desplegables (Dropdowns) en campos repetitivos críticos (proyecto, tramo, método, tipo de documento).  
+- Soft delete de documentos con trazabilidad y versión.  
+- Criterios QA/QC inalterables: estado A/O/R por % de compactación, control PIE con estados Cumple/Observado/No Cumple.  
+- Interfaz clara, profesional y sobria con colores QA/QC.  
+- Botones estándar por pantalla: Exportar Excel, Ver Dashboard, Cargar/Eliminar Documento, IA Consultar.  
+- Export Excel limpio y estructurado para Power BI (hoja “DATA”, nombres de archivo con fecha/hora).
+
+#### ✅ Checklist QA/QC  
+[Exportar Excel por pantalla~~Ver Dashboard por pantalla~~Botón IA Consultar~~Calendarios en campos de fecha~~Listas desplegables en campos repetitivos~~Soft delete de documentos~~Control PIE con estados Cumple/Observado/No Cumple~~Criterios QA/QC inalterables~~Export Excel limpio para Power BI~~Interfaz clara y profesional]
+END_CONTENT-84f133d9-e724-4063-a3a8-8dad6727a4dc__dueño_del_producto__REVA.docx
+INIT_CONTENT-279e21e6-89d9-4b9b-b4a7-b9291eaa7e29__Nuevos_conceptos_en_la_determinación_de_la_profundidad_de_dragado__REVA.pdf
+#### Resultado  
+El documento presenta los avances en la determinación de la profundidad de dragado en puertos, destacando nuevos criterios, equipos de medición y análisis de sedimentos. Se enfatiza la importancia de la retrodispersión acústica, la medición de sedimentos en suspensión con ADCP y la definición de la profundidad náutica, especialmente en zonas con lodo fluido. Se subraya la necesidad de integrar datos batimétricos, de corrientes y de laboratorio para asegurar la seguridad y eficiencia de las operaciones de dragado.
+
+#### 🧾 Resumen  
+El estudio revisa los nuevos conceptos y criterios para determinar la profundidad de dragado, incorporando equipos de medición avanzados y análisis de sedimentos. Se describen términos clave como retrodispersión, UKC y profundidad náutica. Se discute la aplicación de sonares multihaz y ADCP para medir sedimentos en suspensión. Se destaca la importancia de la calibración y corrección de datos acústicos. Se plantea la necesidad de definir criterios internacionales para la profundidad náutica. Se resalta el impacto ambiental y económico del dragado en lodo fluido. Se propone integrar levantamientos batimétricos y análisis de sedimentos para mejorar la seguridad marítima.
+
+#### 📋 Requisitos / frases detectadas  
+- Medición precisa de la profundidad mediante sonares multihaz.  
+- Análisis de sedimentos en suspensión con ADCP y ecuación del sonar.  
+- Cálculo de UKC (Under Keel Clearance) para garantizar la seguridad de la navegación.  
+- Definición y aplicación de la profundidad náutica en zonas con lodo fluido.  
+- Corrección automática de ganancia (TVG) y calibración de haz acústico.  
+- Clasificación de fondos marinos mediante retrodispersión acústica.  
+- Evaluación de la plasticidad y densidad de sedimentos en laboratorio.  
+- Integración de datos batimétricos y de corrientes para el replanteo de obras marítimas.  
+- Consideración de la rugosidad superficial y la impedancia acústica.  
+- Evaluación del impacto ambiental y económico del dragado.
+
+#### ✅ Checklist QA/QC  
+[Verificar calibración de sonares multihaz~~Revisar datos de retrodispersión acústica~~Confirmar densidad y plasticidad de sedimentos~~Calcular UKC y profundidad náutica~~Aplicar corrección TVG y calibración de haz~~Validar mediciones ADCP de sedimentos en suspensión~~Corroborar datos batimétricos con levantamientos de corrientes~~Analizar rugosidad y impedancia de fondo~~Evaluar impacto ambiental del dragado~~Revisar cumplimiento de criterios internacionales de profundidad náutica]
+END_CONTENT-279e21e6-89d9-4b9b-b4a7-b9291eaa7e29__Nuevos_conceptos_en_la_determinación_de_la_profundidad_de_dragado__REVA.pdf
