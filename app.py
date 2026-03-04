@@ -10,21 +10,498 @@ Q-INTEGRITY – APP COMPLETA (PC)
 ✅ Sin rutas fijas tipo C:/... (solo archivos locales al lado del app.py)
 PEGAR COMPLETO EN app.py
 '''
+
+
 # ======================= INICIO IMPORTS ==================================
 import os
 import io
 import uuid
 import time
+import re
+import smtplib
+import random
+import hashlib
 from datetime import datetime, date
 from typing import Dict, List, Tuple, Optional
+from pathlib import Path
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
 import numpy as np
 import pandas as pd
 import streamlit as st
-from pathlib import Path
-from api_ia import ApiIa
 import fitz  # PyMuPDF
 import cv2
+from sqlalchemy import text
 from rapidocr_onnxruntime import RapidOCR
+
+st.set_page_config(page_title="Q-INTEGRITY", layout="wide")
+
+from api_ia import ApiIa
+# Se añaden los sesion_state necesarios para la autenticación y gestión de usuarios, así como la función de envío de código de verificación por email.
+
+# Estados para el Login
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+if "login_user" not in st.session_state:
+    st.session_state["login_user"] = ""
+
+# Estados para el flujo de Registro y Verificación
+if "mode" not in st.session_state:
+    st.session_state["mode"] = "login"  # Controla si mostramos el formulario o el código
+
+# Datos temporales (Se guardan aquí mientras el usuario espera el correo)
+if "pending_user" not in st.session_state:
+    st.session_state["pending_user"] = ""
+if "pending_pass" not in st.session_state:
+    st.session_state["pending_pass"] = ""
+if "pending_email" not in st.session_state:
+    st.session_state["pending_email"] = ""
+
+# El código que se envía por Gmail
+if "codigo_generado" not in st.session_state:
+    st.session_state["codigo_generado"] = None
+
+
+#Funcion de encriptar contraseñas
+def proteger_clave(password):
+    return hashlib.sha256(str.encode(password)).hexdigest()
+
+#conexion base de datos
+@st.cache_resource
+def obtener_conexion():
+    try:
+        return st.connection("postgresql", type="sql")
+    except Exception as e:
+        st.error("No se pudo establecer la conexión segura con la base de datos.")
+        st.stop()
+conn = obtener_conexion()
+
+#credenciañes de gmail
+GMAIL_SENDER = st.secrets["GMAIL_SENDER"]
+GMAIL_KEY = st.secrets["GMAIL_PASSWORD"]
+
+def enviar_codigo(destino, nombre_usuario):
+
+    codigo = str(random.randint(10000, 99999))
+    st.session_state.codigo_generado = codigo
+    
+    mensaje = MIMEMultipart()
+    mensaje['Subject'] = "Código de Verificación - Q-Integrity"
+    mensaje['From'] = GMAIL_SENDER
+    mensaje['To'] = destino
+
+    numeroImagen = str(random.randint(1, 3))
+
+    url_logo = f"https://csrmdehaiivpcdnxafax.supabase.co/storage/v1/object/public/imagenes/imagen{numeroImagen}-cortada.jpeg"
+
+    html = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; background-color: #f4f7f6; padding: 20px;">
+        <div style="max-width: 500px; margin: auto; background: white; padding: 30px; border-radius: 10px; text-align: center; border: 1px solid #ddd;">
+            <img src="{url_logo}" style="width: 180px; margin-bottom: 20px;">
+            <h2 style="color: #2d3748;">Verificación de Identidad</h2>
+            <p style="color: #4a5568;">Hola <strong>{nombre_usuario}</strong>, utiliza el siguiente código para completar tu registro:</p>
+            <div style="margin: 20px 0; padding: 15px; background-color: #edf2f7; border-radius: 8px;">
+                <span style="font-size: 32px; font-weight: bold; color: #2b6cb0; letter-spacing: 5px;">{codigo}</span>
+            </div>
+            <p style="color: #718096; font-size: 12px;">Si no solicitaste este código, ignora este correo.</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    mensaje.attach(MIMEText(html, 'html'))
+
+    try:
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(GMAIL_SENDER, GMAIL_KEY)
+        server.sendmail(GMAIL_SENDER, destino, mensaje.as_string())
+        server.quit()
+        st.toast("Código enviado con éxito 📧")
+    except Exception as e:
+        st.error(f"Error al enviar: {e}")
+
+def check_login(user, pwd):
+    # Si ya se está logueado en esta sesion, no vamos a la BD
+    if st.session_state.get("logged_in") and st.session_state.get("login_user") == user:
+        return True
+    
+    try:
+
+        query = text("SELECT nombre, clave FROM usuarios WHERE nombre = :u")
+        
+        with conn.session as s:
+            result = s.execute(query, params={"u": user}).fetchone()
+            
+            if result:
+                db_user, db_pass_hash = result
+                # Comparamos el hash de la clave ingresada con la de la BD
+                if db_pass_hash == proteger_clave(pwd):
+                    return True
+        
+        return False # No coinciden o no existe
+    except Exception as e:
+        st.error(f"Error de conexión: {e}")
+        return False
+
+def register_user(user, email, pwd):
+    try:
+        #Conexión a la base de datos
+        conn = st.connection("postgresql", type="sql")
+        
+        #Verificar si el usuario ya existe
+        query_check = text("SELECT nombre FROM usuarios WHERE nombre = :u")
+        with conn.session as s:
+            result = s.execute(query_check, params={"u": user}).fetchone()
+            if result:
+                return False, "El usuario ya existe."
+            
+            #Si no existe, lo insertamos
+            clave_hash = proteger_clave(pwd)
+            query_ins = text("INSERT INTO usuarios (nombre, clave, email) VALUES (:u, :c, :e)")
+            s.execute(query_ins, params={"u": user, "c": clave_hash, "e": email})
+            s.commit()
+            
+        return True, "Usuario registrado correctamente en la base de datos."
+    except Exception as e:
+        return False, f"Error técnico: {e}"
+
+def change_password(user: str, old_pwd: str, new_pwd: str) -> Tuple[bool, str]:
+    if not new_pwd or len(new_pwd.strip()) == 0:
+        return False, "La nueva contraseña no puede estar vacía."
+    
+    try:
+        #Consultar la contraseña actual (hash) en la DB
+        query_val = text("SELECT clave FROM usuarios WHERE nombre = :u")
+        with conn.session as s:
+            result = s.execute(query_val, params={"u": user}).fetchone()
+            
+            if not result:
+                return False, "Usuario no encontrado."
+            
+            db_pass_hash = result[0]
+            
+            # Verificar si la contraseña antigua coincide
+            if db_pass_hash != proteger_clave(old_pwd):
+                return False, "La contraseña actual es incorrecta."
+            
+            #Actualizar con el nuevo hash
+            nuevo_hash = proteger_clave(new_pwd)
+            query_upd = text("UPDATE usuarios SET clave = :n WHERE nombre = :u")
+            s.execute(query_upd, params={"n": nuevo_hash, "u": user})
+            s.commit()
+            
+        return True, "Contraseña actualizada correctamente en la base de datos."
+    except Exception as e:
+        return False, f"Error técnico al actualizar: {e}"
+
+def get_current_user_info() -> Optional[Dict]:
+    current_user = st.session_state.get("login_user", "")
+    
+    if not current_user:
+        return None
+        
+    try:
+        query = text("SELECT nombre, email FROM usuarios WHERE nombre = :u")
+        with conn.session as s:
+            result = s.execute(query, params={"u": current_user}).fetchone()
+            
+            if result:
+                return {
+                    "username": result[0],
+                    "email": result[1]
+                }
+    except Exception as e:
+        st.error(f"Error al obtener info del usuario: {e}")
+        
+    return None
+
+def logout_user():
+    """Cierra la sesión del usuario."""
+    st.session_state["logged_in"] = False
+    st.session_state["login_user"] = ""
+    st.rerun()
+
+def is_valid_email(email):
+    """Valida si el email tiene un formato básico válido."""
+    pattern = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
+    return re.match(pattern, email) is not None
+
+
+# ======================= PANTALLA LOGIN ==========================
+if not st.session_state["logged_in"]:
+
+    # Centrar contenedor y agregar fondo
+    st.markdown("""
+    <style>
+        .block-container {
+        max-width: 2000px;
+        margin: 0;
+        padding: 0;
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        height: 100vh;  
+        display: flex;
+        flex-direction: column;
+        justify-content: center; 
+        align-items: center;  
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        overflow: hidden;  
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Título principal
+    st.markdown("""
+    <div style="text-align: center; margin-bottom: 15px; margin-top: 90px">
+        <h1 style="color: #2d3748; font-size: 58px; font-weight: 700; margin: 0; letter-spacing: -1px;">
+            Q-Integrity
+        </h1>
+        <p style="color: #4a5568; font-size: 20px; font-weight: 400; margin: 2px 0 0 0;">Inicia sesión o Registrate para continuar</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Card principal con tabs
+    st.markdown("""
+    <div class='main-card'>
+        <div class='card-body'>
+    """, unsafe_allow_html=True)
+
+    tab1, tab2 = st.tabs(["🔑 Iniciar Sesión", "🔐 Registrarse"])
+
+#INICIAR SESION
+    with tab1:
+        st.markdown("<div class='tab-content'>", unsafe_allow_html=True)
+        login_user = st.text_input("Usuario", placeholder="Ingresa tu usuario", key="login_user_input")
+        login_pass = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña", key="login_pass_input")
+        
+        if st.button("Iniciar Sesión", key="btn_login", width='stretch'):
+            if login_user and login_pass:
+
+                if check_login(login_user, login_pass):
+                    st.session_state["logged_in"] = True
+                    st.session_state["login_user"] = login_user
+                    st.success(f"Bienvenido, {login_user}")
+                    st.rerun()
+                else:
+                    st.toast("Usuario o contraseña incorrectos", icon="❌")
+            else:
+                st.toast("Completa ambos campos", icon="⚠️")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+    #REGISTRAR USUARIO -CODIGO - EMAIL - CONTRASEÑA 
+    with tab2:
+        st.markdown("<div class='tab-content'>", unsafe_allow_html=True)
+
+        if st.session_state["mode"] == "login":
+            reg_user = st.text_input("Usuario", placeholder="Crea un usuario", key="reg_user")
+            reg_email = st.text_input("Correo", placeholder="tuemail@ejemplo.com", key="reg_email")
+            reg_pass = st.text_input("Contraseña", type="password", placeholder="Crea una contraseña", key="reg_pass")
+            reg_pass2 = st.text_input("Repetir contraseña", type="password", placeholder="Repite la contraseña", key="reg_pass2")
+            
+            if st.button("Crear Cuenta", key="btn_register", width='stretch'):
+                if not reg_user or not reg_email or not reg_pass:
+                    st.toast("Completa todos los campos", icon="⚠️")
+                elif not is_valid_email(reg_email):
+                    st.toast("Ingresa un correo electrónico válido", icon="⚠️")
+                elif reg_pass != reg_pass2:
+                    st.toast("Las contraseñas no coinciden", icon="⚠️")
+                else:
+                    try:
+                        query_check = text("SELECT nombre FROM usuarios WHERE nombre = :u")
+                        with conn.session as s:
+                            result = s.execute(query_check, params={"u": reg_user}).fetchone()
+                        
+                        if result:
+                            st.toast(f"El usuario '{reg_user}' ya existe. Elige otro.", icon="⚠️")
+                        else:
+                            st.session_state["pending_user"] = reg_user
+                            st.session_state["pending_email"] = reg_email
+                            st.session_state["pending_pass"] = reg_pass
+                            
+                            enviar_codigo(reg_email, reg_user)
+
+                            st.toast("Código de verificación enviado", icon="📧")
+                            st.session_state["mode"] = "verification"
+                            st.rerun()
+                            
+                    except Exception as e:
+                        st.error(f"Error al verificar base de datos: {e}")
+
+        elif st.session_state["mode"] == "verification":
+            st.markdown("### Código de Verificación")
+            verification_code = st.text_input("Código de verificación", placeholder="Ingresa el código", key="verification_code")
+            
+            if st.button("Verificar", key="btn_verify", width='stretch'):
+                if verification_code.strip() == st.session_state["codigo_generado"]:
+
+                    ok, msg = register_user(
+                        st.session_state["pending_user"],
+                        st.session_state["pending_email"],
+                        st.session_state["pending_pass"]
+                    )
+                    if ok:
+                        st.success("Verificación exitosa. Ahora puedes iniciar sesión.")
+                        st.session_state["mode"] = "login"
+                        st.session_state["pending_user"] = ""
+                        st.session_state["pending_email"] = ""
+                        st.session_state["pending_pass"] = ""
+                        st.rerun()
+                    else:
+                        st.toast(msg, icon="❌")
+                else:
+                    st.toast("Código inválido. Inténtalo de nuevo.", icon="❌")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+    # ================= ESTILOS =================
+    st.markdown("""
+    <style>
+        /* Fuentes y general */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #2d3748;
+        }
+
+        /* Main Card */
+        .main-card {
+            background: #667eea;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+            margin: 0 auto;
+            max-width: 600px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .card-body {
+            padding: 0;
+        }
+
+        /* Tabs */
+        .stTabs [data-baseweb="tab-list"] {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px 12px 0 0;
+            padding: 0;
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            color: white;
+            font-weight: 600;
+            padding: 15px 20px;
+            border-radius: 0;
+        }
+
+        .stTabs [data-baseweb="tab"]:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .stTabs [data-baseweb="tab"][aria-selected="true"] {
+            background: #ffffff;
+            color: #667eea;
+        }
+
+        .stTabs [data-baseweb="tab-panel"] {
+            padding: 30px;
+        }
+
+        .tab-content {
+            /* Espaciado interno */
+        }
+
+        /* Labels e inputs */
+        .stTextInput label {
+            font-size: 16px !important;
+            font-weight: 600 !important;
+            color: #4a5568 !important;
+            margin-bottom: 8px !important;
+        }
+
+        .stTextInput > div > div > input {
+            background: #f7fafc !important;
+            border: 2px solid #e2e8f0 !important;
+            border-radius: 8px !important;
+            font-weight: 500 !important;
+            padding: 14px !important;
+            font-size: 16px !important;
+            transition: all 0.3s ease;
+            outline: none !important;
+            box-shadow: none !important;
+        }
+
+        .stTextInput > div > div > input:focus {
+            border-color: #667eea !important;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1) !important;
+            background: #ffffff !important;
+        }
+
+        .stTextInput input, .stTextInput input[type="text"], .stTextInput input[type="password"], .stTextInput input[type="email"] {
+            color: #2d3748 !important;
+        }
+
+        /* Botones */
+        .stButton > button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-weight: 800;
+            border-radius: 8px;
+            border: none;
+            padding: 14px 20px;
+            font-size: 19px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+            width: 100%;
+        }
+
+        .stButton > button:hover {
+            background: linear-gradient(135deg, #5a67d8 0%, #6b46c1 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .stButton > button:active {
+            transform: translateY(0);
+        }
+
+        /* Alertas */
+        .stAlert {
+            border-radius: 8px;
+            font-weight: 500;
+            border: none;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Espaciado general */
+        .stTextInput {
+            margin-bottom: 2px;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .block-container {
+                padding-top: 20px;
+            }
+            .stTabs [data-baseweb="tab-panel"] {
+                padding: 20px;
+            }
+        }
+
+        /* Estilos globales para evitar scroll */
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.stop()
+
+# ======================= FIN LOGIN ==========================
 
 ################################# OPTIMIZACIONES MOTOR OCR ################################
 # Instancia OCR en cache para optimizacion
@@ -210,41 +687,9 @@ HAS_GROQ = st.session_state["HAS_GROQ"]
 
 
 # ======================== FIN IMPORTS ===========================================
-# --- 🕵️ BLOQUE DE DIAGNÓSTICO (BORRAR AL FINAL) ---
-def verificar_groq():
-    import streamlit as st
-    try:
-        st.markdown("### 🕵️ Diagnóstico de Conexión")
-        
-        # 1. Probar si la librería existe
-        import groq
-        st.success("1. ✅ Librería `groq` instalada correctamente.")
-        
-        # 2. Probar si lee los secretos
-        if "groq_api_key" in st.secrets:
-            clave = st.secrets["groq_api_key"]
-            # Mostrar solo los primeros 4 caracteres para verificar
-            st.success(f"2. ✅ Secreto encontrado. Empieza con: `{clave[:4]}...`")
-            
-            # 3. Probar conexión real
-            try:
-                client_test = groq.Groq(api_key=clave)
-                st.success("3. ✅ Cliente Groq inicializado sin errores.")
-            except Exception as e:
-                st.error(f"3. ❌ Error al iniciar cliente Groq: {e}")
-                
-        else:
-            st.error(f"2. ❌ NO se encuentra la clave 'groq_api_key' en los secretos. Claves disponibles: {list(st.secrets.keys())}")
-            
-    except ImportError:
-        st.error("1. ❌ La librería `groq` NO está instalada (revisa requirements.txt).")
-    except Exception as e:
-        st.error(f"❌ Error general en diagnóstico: {e}")
-
-    st.divider()
-# ----------------------------------------------------
 
 # ======================== INICIO DE UTILIDADES  =================================
+
 def _alt_csv_path(path: str) -> str:
     if not path:
         return path
@@ -400,7 +845,7 @@ except Exception as e:
 # ======================== FIN DE UTILIDADES  =================================
 
 # ======================== INICIO DE CONFIGURACION Y RESETS SEGUROS =================================
-st.set_page_config(page_title="Q-INTEGRITY", layout="wide")
+
 
 if st.session_state.get("DEN_RESET_REQUESTED"):
     _clear_last = bool(st.session_state.get("DEN_RESET_CLEAR_LAST", True))
@@ -430,9 +875,6 @@ DATA_FILE_PIE_M3 = "qintegrity_control_pie_m3.xlsx"
 
 # ✅ Índice de Biblioteca EETT (cuando exista Pantalla 7)
 EETT_INDEX_FILE = "qintegrity_biblioteca.xlsx"
-
-# Indice de checklist aprobados (Pantalla 8)
-DATA_FILE_REVISIONES = Path("qintegrity_revisiones.txt")
 
 FIG_W = 5.8
 FIG_H = 3.2
@@ -544,6 +986,7 @@ with colB:
     """,
         unsafe_allow_html=True,
     )
+
 
 # ======================== FIN DE ESTILOS PERSONALIZADOS =================================
 
@@ -1095,26 +1538,45 @@ def compute_kpis_den(df_in: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
 
 
 def style_table_den(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
+    df_format = df.copy()
+
+    for col in ["ID_Registro", "Tramo", "N_Registro", "N_Control", "Capa_N"]:
+        if col in df_format.columns:
+            df_format[col] = df_format[col].apply(lambda x: str(int(float(x))) if pd.notna(x) and str(x).strip() != "" else "")
+
+    cols_3_dec = [
+        "Densidad_Humeda_gcm3", "Humedad_medida_pct", "Humedad_Optima_pct", 
+        "Delta_Humedad_pct", "Densidad_Seca_gcm3", "DMCS_Proctor_gcm3", 
+        "pct_Compactacion"
+    ]
+    
+    cols_2_dec = ["Cota", "Coordenada_Norte", "Coordenada_Este", "Espesor_capa_cm", "Dm_inicio", "Dm_termino", "Dm_Control"]
+
+    for col in cols_3_dec + cols_2_dec:
+        if col in df_format.columns:
+            df_format[col] = pd.to_numeric(df_format[col], errors='coerce')
+
     def row_bg(row):
         stt = str(row.get("Estado_QAQC", "")).upper().strip()
-        if stt == "CUMPLE":
-            return ["background-color: #eef9f0"] * len(row)
-        if stt == "OBSERVADO":
-            return ["background-color: #fff7e6"] * len(row)
-        if stt == "NO CUMPLE":
-            return ["background-color: #fdeff1"] * len(row)
+        if stt == "CUMPLE": return ["background-color: #eef9f0"] * len(row)
+        if stt == "OBSERVADO": return ["background-color: #fff7e6"] * len(row)
+        if stt == "NO CUMPLE": return ["background-color: #fdeff1"] * len(row)
         return [""] * len(row)
 
-    return (
-        df.style.apply(row_bg, axis=1)
-        .set_table_styles(
-            [
-                {"selector": "th", "props": "background-color:#dfe8f7; color:#0f172a; font-weight:900;"},
-                {"selector": "td", "props": "border:1px solid #d7e1f0;"},
-                {"selector": "table", "props": "border-collapse:collapse; width:100%;"},
-            ]
-        )
-    )
+    format_dict = {col: "{:.3f}" for col in cols_3_dec}
+    for col in cols_2_dec:
+        format_dict[col] = "{:.2f}"
+
+    styler = (df_format.style
+              .apply(row_bg, axis=1)
+              .format(format_dict, na_rep="—")
+              .set_table_styles([
+                  {"selector": "th", "props": "background-color:#dfe8f7; color:#0f172a; font-weight:900;"},
+                  {"selector": "td", "props": "border:1px solid #d7e1f0;"},
+                  {"selector": "table", "props": "border-collapse:collapse; width:100%;"},
+              ]))
+    
+    return styler
 
 
 def delete_by_ids_den(df_all: pd.DataFrame, ids_to_delete: List[int]) -> Tuple[pd.DataFrame, int]:
@@ -1437,26 +1899,68 @@ def delete_by_ids_generic(df_all: pd.DataFrame, ids_to_delete: List[int]) -> Tup
     df_new = df_new[~df_new["ID_Registro"].isin(ids_to_delete)].copy()
     return df_new, (before - len(df_new))
 
-
+#table
 def style_table_pie(df: pd.DataFrame, estado_col: str = "Estado") -> "pd.io.formats.style.Styler":
+    df_format = df.copy()
+
+    if "ID_Registro" in df_format.columns:
+        df_format["ID_Registro"] = df_format["ID_Registro"].apply(
+            lambda x: str(int(float(x))) if pd.notna(x) and str(x).strip() != "" and str(x).lower() != "nan" else ""
+        )
+
+    num_cols = df_format.select_dtypes(include=[np.number]).columns.tolist()
+    
     def row_bg(row):
         stt = str(row.get(estado_col, "")).upper().strip()
-        if stt == "CUMPLE":
+        if stt == "CUMPLE": 
             return ["background-color: #eef9f0"] * len(row)
-        if stt in ["PENDIENTE", "OBSERVADO"]:
+        if stt in ["PENDIENTE", "OBSERVADO"]: 
             return ["background-color: #fff7e6"] * len(row)
         return [""] * len(row)
 
-    return (
-        df.style.apply(row_bg, axis=1)
-        .set_table_styles(
-            [
+    styler = (df_format.style
+            .apply(row_bg, axis=1)
+            .format({col: "{:.3f}" for col in num_cols}, na_rep="—")
+            .set_table_styles([
                 {"selector": "th", "props": "background-color:#dfe8f7; color:#0f172a; font-weight:900;"},
                 {"selector": "td", "props": "border:1px solid #d7e1f0;"},
                 {"selector": "table", "props": "border-collapse:collapse; width:100%;"},
-            ]
-        )
-    )
+            ]))
+    
+    return styler
+
+def style_table_pie3(df: pd.DataFrame, estado_col: str = "Estado") -> "pd.io.formats.style.Styler":
+    df_format = df.copy()
+
+    cols_a_limpiar = ["ID_Registro", "COD_PROYECTO"]
+    
+    for col in cols_a_limpiar:
+        if col in df_format.columns:
+            df_format[col] = df_format[col].apply(
+                lambda x: str(int(float(x))) if pd.notna(x) and str(x).strip() != "" and str(x).lower() != "nan" else str(x)
+            )
+
+
+    num_cols = df_format.select_dtypes(include=[np.number]).columns.tolist()
+    
+    def row_bg(row):
+        stt = str(row.get(estado_col, "")).upper().strip()
+        if stt == "CUMPLE": 
+            return ["background-color: #eef9f0"] * len(row)
+        if stt in ["PENDIENTE", "OBSERVADO"]: 
+            return ["background-color: #fff7e6"] * len(row)
+        return [""] * len(row)
+
+    styler = (df_format.style
+            .apply(row_bg, axis=1)
+            .format({col: "{:.3f}" for col in num_cols}, na_rep="—")
+            .set_table_styles([
+                {"selector": "th", "props": "background-color:#dfe8f7; color:#0f172a; font-weight:900;"},
+                {"selector": "td", "props": "border:1px solid #d7e1f0;"},
+                {"selector": "table", "props": "border-collapse:collapse; width:100%;"},
+            ]))
+    
+    return styler
 
 
 def pie_calc_m2(largo: Optional[float], ancho: Optional[float], pie_valor: Optional[float], ejecutadas: Optional[float]) -> Dict:
@@ -1665,6 +2169,34 @@ if st.session_state["APP_PAGE"] in ["DEN_P1", "DEN_P2"]:
 
 
 # =========================================================
+# ===================  PANTALLA LOGIN/REGISTRO  ==============
+# =========================================================
+if st.session_state.get("APP_PAGE") == "LOGIN":
+    st.markdown("""
+    <div class='qi-section'>
+      <div class='qi-h3'>Acceso a Q-Integrity</div>
+    </div>
+    """, unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("<div class='qi-h3'>Iniciar Sesión</div>", unsafe_allow_html=True)
+        login_user = st.text_input("Usuario", key="login_user")
+        login_pass = st.text_input("Contraseña", type="password", key="login_pass")
+        if st.button("Iniciar Sesión", key="btn_login", width='stretch'):
+            st.info("(Aquí va la lógica de login)")
+    with col2:
+        st.markdown("<div class='qi-h3'>Registrarse</div>", unsafe_allow_html=True)
+        reg_user = st.text_input("Nuevo usuario", key="reg_user")
+        reg_email = st.text_input("Correo electrónico", key="reg_email")
+        reg_pass = st.text_input("Contraseña", type="password", key="reg_pass")
+        reg_pass2 = st.text_input("Repetir contraseña", type="password", key="reg_pass2")
+        if st.button("Registrarse", key="btn_register", width='stretch'):
+            st.info("(Aquí va la lógica de registro)")
+    st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+
+
+
+# =========================================================
 # ===================  PANTALLA 1 DENSIDADES  ==============
 # =========================================================
 if st.session_state["APP_PAGE"] == "DEN_P1":
@@ -1673,7 +2205,7 @@ if st.session_state["APP_PAGE"] == "DEN_P1":
         st.toast(st.session_state.get("guardado_exitoso"),icon="✅")
         del st.session_state["guardado_exitoso"]
 
-    st.caption("Densidades · Pantalla 1 · Ingreso + Cálculos + Ver/Editar/Eliminar + Export")
+    st.caption("Densidades · Ingreso + Cálculos + Ver/Editar/Eliminar + Export")
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
     df_all0 = load_data_den(DATA_FILE_DEN)
@@ -1860,8 +2392,8 @@ if st.session_state["APP_PAGE"] == "DEN_P1":
     with right_save:
         if st.session_state.get("DEN_EDIT_ID") and st.session_state.get("DEN_EDIT_ROWKEY"):
             st.info(f"Editando ID={st.session_state['DEN_EDIT_ID']} ✅")
-        else:
-            st.info("Modo nuevo registro ✅")
+        # else:
+        #     st.info("Modo nuevo registro ✅")
 
     def validate_den_common() -> List[str]:
         errs = []
@@ -2092,8 +2624,8 @@ if st.session_state["APP_PAGE"] == "DEN_P1":
     cdel1, cdel2 = st.columns([1, 3])
     with cdel1:
         do_del = st.button("🗑️ Eliminar seleccionados", width='stretch')
-    with cdel2:
-        st.caption("Borra por ID_Registro (visible).")
+    # with cdel2:
+    #     st.caption("Borra por ID_Registro (visible).")
 
     if do_del:
         df_now = load_data_den(DATA_FILE_DEN)
@@ -2108,6 +2640,7 @@ if st.session_state["APP_PAGE"] == "DEN_P1":
         st.rerun()
 
     # TABLA + EXPORT (P1)
+
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("### 📋 Base de datos (Densidades)")
     df_show = load_data_den(DATA_FILE_DEN).sort_values(["Fecha_control", "ID_Registro"], ascending=[False, False])
@@ -2133,7 +2666,7 @@ if st.session_state["APP_PAGE"] == "DEN_P1":
 # ===================  PANTALLA 2 DENSIDADES  ==============
 # =========================================================
 if st.session_state["APP_PAGE"] == "DEN_P2":
-    st.caption("Densidades · Pantalla 2 · KPIs + Gráficos + Eliminar + Export")
+    st.caption("Densidades · KPIs + Gráficos + Eliminar + Export")
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     # MOSTRAR MENSAJE DE BORRADO PENDIENTE
     if "eliminado_exitoso" in st.session_state:
@@ -2227,7 +2760,7 @@ if st.session_state["APP_PAGE"] == "DEN_P2":
         st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
         st.markdown("### 📋 Tabla filtrada")
         show_cols = ["ID_Registro", "Fecha_control", "Codigo_Proyecto", "Proyecto", "Sector_Zona", "Tramo", "Operador", "pct_Compactacion", "Estado_QAQC", "Observacion"]
-        st.dataframe(style_table_den(df_f[show_cols].copy()), width='stretch', height=360)
+        st.dataframe(style_table_den(df_f[show_cols]), width='stretch', height=360)
 
 
 # =========================================================
@@ -2288,7 +2821,7 @@ def pie_m2_load_record_into_form(row: pd.Series):
 if st.session_state["APP_PAGE"] == "PIE_M2_P1":
     _pie_m2_apply_pending_reset()
 
-    st.caption("Control PIE m² · Pantalla 3 · Ingreso / Editar / Eliminar + Export")
+    st.caption("Control PIE m² · Ingreso / Editar / Eliminar + Export")
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     # MOSTRAR MENSAJES PENDIENTES (GUARDADO,MODIFICADO,BORRADO)
     if "operacion_exitosa" in st.session_state:
@@ -2327,8 +2860,8 @@ if st.session_state["APP_PAGE"] == "PIE_M2_P1":
     with t3:
         if st.session_state.get("PIE2_EDIT_ID") and st.session_state.get("PIE2_EDIT_ROWKEY"):
             st.info(f"Editando ID={st.session_state['PIE2_EDIT_ID']} ✅")
-        else:
-            st.info("Modo nuevo registro ✅")
+        # else:
+        #     st.info("Modo nuevo registro ✅")
 
     st.markdown("<div class='qi-section'><div class='qi-h3'>Ingreso Control PIE m²</div>", unsafe_allow_html=True)
 
@@ -2379,8 +2912,8 @@ if st.session_state["APP_PAGE"] == "PIE_M2_P1":
         pie_save = st.button("💾 Guardar PIE m²", type="primary", width='stretch')
     with bsave2:
         pie_save_edit = st.button("💾 Guardar cambios PIE m²", width='stretch')
-    with bsave3:
-        st.caption(f"Guardado en {DATA_FILE_PIE_M2}")
+    # with bsave3:
+    #     st.caption(f"Guardado en {DATA_FILE_PIE_M2}")
 
     def validate_pie_m2() -> List[str]:
         errs = []
@@ -2546,7 +3079,7 @@ if st.session_state["APP_PAGE"] == "PIE_M2_P1":
 # ===================  PIE m² – KPIs  ======================
 # =========================================================
 if st.session_state["APP_PAGE"] == "PIE_M2_P2":
-    st.caption("Control PIE m² · Pantalla 4 · KPIs + Gráficos + Export")
+    st.caption("Control PIE m² · KPIs + Gráficos + Export")
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
     df_all = load_data_generic(
@@ -2623,7 +3156,7 @@ if st.session_state["APP_PAGE"] == "PIE_M2_P2":
         st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
         st.markdown("### 📋 Tabla filtrada")
         view_cols = ["ID_Registro", "Fecha", "COD_PROYECTO", "Sector_Zona", "Frente_Tramo", "Area_m2", "Requeridas", "Ejecutadas", "Brecha", "Pct_Cumpl", "Estado"]
-        st.dataframe(style_table_pie(df_f[view_cols].copy()), width='stretch', height=360)
+        st.dataframe(style_table_pie(df_f[view_cols]), width='stretch', height=360)
 
 
 # =========================================================
@@ -2686,7 +3219,7 @@ def pie_m3_load_record_into_form(row: pd.Series):
 if st.session_state["APP_PAGE"] == "PIE_M3_P1":
     _pie_m3_apply_pending_reset()
 
-    st.caption("Control PIE m³ · Pantalla 5 · Ingreso/Editar/Eliminar + Export")
+    st.caption("Control PIE m³ · Ingreso/Editar/Eliminar + Export")
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
     df_all0 = load_data_generic(
@@ -2716,8 +3249,8 @@ if st.session_state["APP_PAGE"] == "PIE_M3_P1":
     with t3:
         if st.session_state.get("PIE3_EDIT_ID") and st.session_state.get("PIE3_EDIT_ROWKEY"):
             st.info(f"Editando ID={st.session_state['PIE3_EDIT_ID']} ✅")
-        else:
-            st.info("Modo nuevo registro ✅")
+        # else:
+        #     st.info("Modo nuevo registro ✅")
 
     st.markdown("<div class='qi-section'><div class='qi-h3'>Ingreso Control PIE m³</div>", unsafe_allow_html=True)
     p1, p2, p3, p4 = st.columns(4)
@@ -2767,8 +3300,8 @@ if st.session_state["APP_PAGE"] == "PIE_M3_P1":
         pie_save = st.button("💾 Guardar PIE m³", type="primary", width='stretch')
     with bsave2:
         pie_save_edit = st.button("💾 Guardar cambios PIE m³", width='stretch')
-    with bsave3:
-        st.caption(f"Guardado en {DATA_FILE_PIE_M3}")
+    # with bsave3:
+    #     st.caption(f"Guardado en {DATA_FILE_PIE_M3}")
 
     def validate_pie_m3() -> List[str]:
         errs = []
@@ -2904,7 +3437,7 @@ if st.session_state["APP_PAGE"] == "PIE_M3_P1":
     df_show = df_now.sort_values(["Fecha", "ID_Registro"], ascending=[False, False])
     view_cols = ["ID_Registro", "Fecha", "COD_PROYECTO", "Sector_Zona", "Frente_Tramo", "Volumen_m3", "PIE_VALOR_m3_por_ensayo", "Requeridas", "Ejecutadas", "Brecha", "Pct_Cumpl", "Estado"]
     df_view = df_show[view_cols].copy() if not df_show.empty else pd.DataFrame(columns=view_cols)
-    st.dataframe(style_table_pie(df_view), width='stretch', height=360)
+    st.dataframe(style_table_pie3(df_view), width='stretch', height=360)
 
     df_kpi, _ = compute_kpis_pie(df_show, base_col="Volumen_m3")
     xbytes = export_excel_bytes(df_show, df_kpi)
@@ -2920,7 +3453,7 @@ if st.session_state["APP_PAGE"] == "PIE_M3_P1":
 # ===================  PIE m³ – KPIs  ======================
 # =========================================================
 if st.session_state["APP_PAGE"] == "PIE_M3_P2":
-    st.caption("Control PIE m³ · Pantalla 6 · KPIs + Gráficos + Export")
+    st.caption("Control PIE m³ · KPIs + Gráficos + Export")
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
     df_all = load_data_generic(
@@ -2997,15 +3530,38 @@ if st.session_state["APP_PAGE"] == "PIE_M3_P2":
         st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
         st.markdown("### 📋 Tabla filtrada")
         view_cols = ["ID_Registro", "Fecha", "COD_PROYECTO", "Sector_Zona", "Frente_Tramo", "Volumen_m3", "Requeridas", "Ejecutadas", "Brecha", "Pct_Cumpl", "Estado"]
-        st.dataframe(style_table_pie(df_f[view_cols].copy()), width='stretch', height=360)
+        st.dataframe(style_table_pie3(df_f[view_cols]), width='stretch', height=360)
 st.sidebar.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 st.sidebar.markdown("#### 📚 Biblioteca / IA")
+
 if st.sidebar.button("📚 7) Biblioteca EETT", width='stretch'):
     st.session_state["APP_PAGE"] = "EETT_P7"
     st.rerun()
-if st.sidebar.button("🤖 8) IA sobre EETT", width='stretch'):
-    st.session_state["APP_PAGE"] = "IA_P8"
+if st.sidebar.button("📁 8) Formatos de Protocolo", width='stretch'):
+    st.session_state["APP_PAGE"] = "EXCEL_P8"
     st.rerun()
+if st.sidebar.button("🤖 9) IA sobre EETT", width='stretch'):
+    st.session_state["APP_PAGE"] = "IA_P9"
+    st.rerun()
+
+# =========================================================
+# ===================  MI CUENTA – SIDEBAR  ==============
+# =========================================================
+st.sidebar.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+st.sidebar.markdown("#### ⚙️Mi Cuenta")
+
+# Mostrar info del usuario actual
+current_user = st.session_state.get("login_user", "")
+if current_user:
+    st.sidebar.markdown(f"<div style='color:#e5e7eb;font-size:1.15rem;margin-bottom:8px'> ▸ {current_user}</div>", unsafe_allow_html=True)
+
+if st.sidebar.button("👤 Mi Perfil", width='stretch'):
+    st.session_state["APP_PAGE"] = "CUENTA_P1"
+    st.rerun()
+
+if st.sidebar.button("🚪 Cerrar Sesión", width='stretch'):
+    logout_user()
+
 # =========================================================
 # ============  PANTALLA 7 – BIBLIOTECA EETT  =============
 # =========================================================
@@ -3015,7 +3571,7 @@ import hashlib
 from pathlib import Path
 
 EETT_DIR = "biblioteca_eett"
-EETT_INDEX_FILE = "qintegrity_biblioteca.xlsx"  # ya lo tienes en tu set
+EXCEL_DIR = "biblioteca_excel"
 EETT_INDEX_COLS = [
     "DocID",
     "Nombre_Original",
@@ -3198,7 +3754,7 @@ def _eett_delete(docid: str) -> Tuple[bool, str]:
 
 def render_pantalla_7_eett():
     st.subheader("📚 Biblioteca EETT")
-    st.caption("Pantalla 7 · Carga documentos + Índice con trazabilidad (hash anti-duplicado) + acciones")
+    st.caption("Carga documentos + Índice con trazabilidad (hash anti-duplicado) + acciones")
     if "mensaje" in st.session_state:
         st.toast(st.session_state["mensaje"],icon="ℹ️")
         del st.session_state["mensaje"]
@@ -3313,9 +3869,9 @@ def render_pantalla_7_eett():
 
 
 # =========================================================
-# ================  PANTALLA 8 – IA EETT  =================
+# ================  PANTALLA 9 – IA EETT  =================
 # =========================================================
-
+# Borrar las que no se usan(_pdf_extract_text,_ia_rule_based_summary,_detect_language, _find_poppler_path,_simple_audit_sumarize)
 def _pdf_extract_text(path_pdf: str, max_pages: int = 25) -> Tuple[bool, str]:
     """
     Extrae texto. Si no puede (PDF escaneado/imagen), devuelve (False, motivo).
@@ -3431,6 +3987,59 @@ def _read_docx_text_robust(abs_path: str) -> str:
                 texts.append(node.text.strip())
         return "\n".join(texts).strip()
     except Exception:
+        return ""
+
+def _read_excel_xlsx_text_robust(abs_path):
+    try:
+        # Motor estándar (openpyxl para .xlsx)
+        dict_hojas = pd.read_excel(abs_path, sheet_name=None, engine='openpyxl')
+    except Exception:
+        try:
+            # Sin especificar motor (pandas)
+            dict_hojas = pd.read_excel(abs_path, sheet_name=None)
+        except Exception:
+            return ""
+            
+        lineas_texto = []
+        
+        for nombre_hoja, df in dict_hojas.items():
+            # eliminamos filas y columnas vacias
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            if not df.empty:
+                lineas_texto.append(f"--- HOJA: {nombre_hoja} ---")
+
+                texto_tabla = df.to_string(index=False, header=True, justify='left')
+                lineas_texto.append(texto_tabla)
+                lineas_texto.append("\n" + "="*30 + "\n") 
+        
+        return "\n".join(lineas_texto).strip()
+        
+    except Exception as e:
+        print(f"Error crítico en la extracción de Excel: {e}")
+        return ""
+#aa
+def _read_excel_xls_text_robust(abs_path):
+    try:
+
+        dict_hojas = pd.read_excel(abs_path, sheet_name=None)
+        
+        if not dict_hojas:
+            return ""
+            
+        lineas_texto = []
+        for nombre_hoja, df in dict_hojas.items():
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            if not df.empty:
+                lineas_texto.append(f"--- HOJA: {nombre_hoja} ---")
+                lineas_texto.append(df.to_string(index=False))
+                lineas_texto.append("\n")
+        
+        return "\n".join(lineas_texto).strip()
+        
+    except Exception as e:
+        # Esto dirá qué motor falta exactamente
+        print(f"Error con Excel (.xls): {e}")
         return ""
 
 # --- OCR Y DETECCIÓN DE IDIOMA  ---
@@ -3597,11 +4206,11 @@ def _simple_audit_summarize(text: str) -> dict:
 
     return {"summary": summary, "requirements": req_lines, "checklist": checklist}
 
-def render_pantalla_8_ia():
+def render_pantalla_9_ia():
     #verificar_groq() #se uso para verificar si funciona el groq y mostrar el problema
     st.subheader("🤖 IA sobre EETT (modo auditor)")
     # --- MODIFICADO: caption ampliado para mencionar PDF/OCR ---
-    st.caption("Pantalla 8 · Selecciona EETT de Biblioteca · Lee WORD (.docx) o PDF (.pdf) y genera resumen + checklist QA/QC (sin inventar).")
+    st.caption("Selecciona EETT de Biblioteca · Lee WORD (.docx) o PDF (.pdf) y genera resumen.")
     # --- FIN MODIFICACIÓN: caption ---
 
     #REVISAR MENSAJES DE LISTA DE PENDIENTES EN COLA
@@ -3665,82 +4274,23 @@ def render_pantalla_8_ia():
         if not text.strip():
             st.error(diag)
             return
+            
+    elif ext == "xlsx":
+        text = _read_excel_xlsx_text_robust(abs_path)
+        if not text.strip():
+            st.error("No pude extraer texto desde el Excel.")
+            return
+    elif ext == "xls":
+        text = _read_excel_xls_text_robust(abs_path)
+        if not text.strip():
+            st.error("No pude extraer texto desde el Excel.")
+            return
     else:
         st.warning("Tipo de archivo no soportado. Esta demo analiza DOCX y PDF (con OCR).")
         return
 
 
     # --- FIN MODIFICACIÓN: extracción y OCR ---
-
-    # ANALISIS DE IA Y GENERACION DE CHECKLISTS QA/QC
-    # Leer las revisiones de checkboxes previas existentes
-    def obtener_revisiones():
-        try:
-            revisiones = DATA_FILE_REVISIONES.read_text()
-            revisiones = revisiones.replace("'", "")
-        except FileNotFoundError:
-            return []
-        except PermissionError:
-            return []
-        except UnicodeDecodeError:
-            return []
-        except Exception as e:
-            return []
-        else:
-            return revisiones.split("\n")
-
-    # Aprobar una revision de acuerdo al estado del checkbox
-    def aprobar_revision(id_revision):
-        try:
-            revisiones = obtener_revisiones()
-            if id_revision not in revisiones:
-                with open(DATA_FILE_REVISIONES, 'a') as f:
-                    f.write(f"\n{id_revision.strip()}")
-        except FileNotFoundError:
-            return ("❌ El archivo no existe")
-        except PermissionError:
-            return ("❌ No tienes permisos para leer el archivo")
-        except UnicodeDecodeError:
-            return ("❌ Problema de codificación del archivo")
-        except Exception as e:
-            return (f"❌ Error inesperado: {e}")
-        else:
-            return f"✅ Aprobada"
-
-    # Revertir check de aprobacion
-    def revertir_desicion(id_revision):
-        try:
-            revisiones = obtener_revisiones()
-            if id_revision in revisiones:
-                revisiones.remove(id_revision)
-                DATA_FILE_REVISIONES.write_text(data="\n".join(revisiones).strip())
-                return "✅ Revertiste la aprobacion"
-            else:
-                return "✅ Revertiste la aprobacion"
-
-        except FileNotFoundError:
-            return "❌ El archivo no existe"
-        except PermissionError:
-            return "❌ No tienes permisos para leer el archivo"
-        except UnicodeDecodeError:
-            return "❌ Problema de codificación del archivo"
-        except Exception as e:
-            return f"❌ Error inesperado: {e}"
-
-    def create_checkboxes(id_generated,checkboxes):
-        # Metodo al cambiar estado del checkbox
-        revisiones = obtener_revisiones()
-        def callback_chk_box(chk_key):
-            if st.session_state.get(chk_key, False) and chk_key not in revisiones:
-                st.session_state["revision"] = aprobar_revision(chk_key)
-
-            elif not st.session_state.get(chk_key, False) and chk_key in revisiones:
-                st.session_state["revision"] = revertir_desicion(chk_key)
-
-        for index,chk_text in enumerate(checkboxes):
-            chk_key = f"{id_generated}_chk_{index}"
-            st.checkbox(chk_text if chk_key not in revisiones else f"~~{chk_text.strip()}~~",key=chk_key,on_change=callback_chk_box,args=(chk_key,),value=True if chk_key in revisiones else False)
-
 
     id_generated = Path(abs_path).name
 
@@ -3784,12 +4334,8 @@ def render_pantalla_8_ia():
         chat_ia = st.session_state[cache_key]
 
     # Mostrar el resumen
-    clean_resume = API_IA_INSTANCIA.clean_checkboxes(chat_ia)
-    st.markdown(clean_resume)
-    
-    # Generamos los checkboxes interactivos
-    checkboxes = API_IA_INSTANCIA.generate_checkboxes(chat_ia)
-    create_checkboxes(id_generated, checkboxes)
+    st.markdown(chat_ia)
+
 
     # --- 3. CHAT INTERACTIVO SOBRE EL DOCUMENTO ---
     st.markdown("---")
@@ -3826,18 +4372,57 @@ def render_pantalla_8_ia():
         st.session_state.chat_history.append({"role": "assistant", "content": respuesta})
         st.rerun()
 
+def render_pantalla_8_excel():
+        st.subheader("📁 Formatos de Protocolo")
+        st.caption("Descarga las plantillas en Excel")
+
+        st.markdown("#### Plantillas disponibles:")
+        try:
+            files = sorted(Path(EXCEL_DIR).glob("*"))
+            if not files:
+                st.info("No hay archivos Excel disponibles.")
+            else:
+                cols = st.columns(2)
+                for idx, file in enumerate(files):
+                    stat = file.stat()
+                    size_mb = stat.st_size / 1024 / 1024
+                    with cols[idx % 2]:
+                        st.markdown(f"""
+                        <div style='border:1px solid #e2e8f0; border-radius:10px; padding:16px; margin-bottom:12px; background:#fafbfc; min-height: 80px;'>
+                            <b>📄 {file.name}</b><br>
+                            <span style='color:#64748b;font-size:0.95em;'>Tamaño: {size_mb:.2f} MB</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        with open(file, "rb") as f:
+                            st.download_button(
+                                label="⬇️ Descargar",
+                                data=f.read(),
+                                file_name=file.name,
+                                mime="application/octet-stream",
+                                key=f"dl8_{file.name}",
+                                width='stretch'
+                            )
+        except Exception as e:
+            st.error(f"Error al listar archivos: {e}")
+    
 # =========================================================
-# ==============  ROUTER NUEVAS PANTALLAS 7/8  =============
+# ==============  ROUTER NUEVAS PANTALLAS 7/8/9 =============
 # =========================================================
 if st.session_state.get("APP_PAGE") == "EETT_P7":
-    st.caption("Biblioteca EETT · Pantalla 7 · Carga + Catálogo + Acciones")
+    st.caption("Biblioteca EETT · Carga + Catálogo + Acciones")
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     render_pantalla_7_eett()
 
-if st.session_state.get("APP_PAGE") == "IA_P8":
-    st.caption("IA sobre EETT · Pantalla 8 · Resumen + Checklist QA/QC")
+if st.session_state.get("APP_PAGE") == "EXCEL_P8":
+    # ===================  PANTALLA 8 – BIBLIOTECA EXCEL  ===================
+    st.caption("Formatos de Protocolo · Descarga Plantillas Excel")
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-    render_pantalla_8_ia()
+    render_pantalla_8_excel()
+
+if st.session_state.get("APP_PAGE") == "IA_P9":
+    st.caption("IA sobre EETT · Resumen + Chat interactivo")
+    st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+    render_pantalla_9_ia()
 # =========================================================
 # BLOQUE EXTRA – ASOCIACIÓN EETT A DENSIDADES (NO ROMPE BASE)
 # =========================================================
@@ -3888,3 +4473,68 @@ def densidades_attach_doc_eett(df):
     if "DocID_EETT" not in df.columns:
         df["DocID_EETT"] = None
     return df
+
+# =========================================================
+# ===================  PANTALLA CUENTA – MI PERFIL  ==============
+# =========================================================
+if st.session_state.get("APP_PAGE") == "CUENTA_P1":
+    st.caption("Mi Cuenta · Gestión de perfil y seguridad")
+    st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+    
+    # Obtener información del usuario actual
+    current_user = st.session_state.get("login_user", "")
+    if not current_user:
+        st.error("No hay usuario logueado.")
+        st.stop()
+    
+    # Obtener datos del usuario
+    user_info = get_current_user_info()
+    if not user_info:
+        st.error("No se pudo obtener la información del usuario.")
+        st.stop()
+    
+    # Mostrar título principal
+    st.markdown("### 👤 Mi Perfil")
+    
+    # Mostrar información del usuario
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Información de la cuenta
+        st.markdown("<div class='qi-section'>", unsafe_allow_html=True)
+        st.markdown("#### 📋 Datos de la Cuenta")
+        st.markdown(f"**Nombre de usuario:** {user_info.get('username', 'N/A')}")
+        st.markdown(f"**Correo electrónico:** {user_info.get('email', 'N/A')}")
+        st.markdown("</div>", unsafe_allow_html=True)
+    
+    with col2:
+        # Formulario de cambio de contraseña
+        st.markdown("<div class='qi-section'>", unsafe_allow_html=True)
+        st.markdown("#### 🔐 Cambiar Contraseña")
+        
+        with st.form("cambiar_password_form"):
+            pass_actual = st.text_input("Contraseña actual", type="password", key="pass_actual", placeholder="Ingresa tu contraseña actual")
+            pass_nueva = st.text_input("Nueva contraseña", type="password", key="pass_nueva", placeholder="Ingresa la nueva contraseña")
+            pass_confirmar = st.text_input("Confirmar nueva contraseña", type="password", key="pass_confirmar", placeholder="Confirma la nueva contraseña")
+            
+            btn_cambiar = st.form_submit_button("💾 Cambiar Contraseña", type="primary", width='stretch')
+            
+            if btn_cambiar:
+                if not pass_actual:
+                    st.error("⚠️ Ingresa la contraseña actual.")
+                elif not pass_nueva:
+                    st.error("⚠️ Ingresa la nueva contraseña.")
+                elif pass_nueva != pass_confirmar:
+                    st.error("⚠️ Las contraseñas nuevas no coinciden.")
+                elif len(pass_nueva) < 3:
+                    st.error("⚠️ La contraseña debe tener al menos 3 caracteres.")
+                else:
+                    # Realizar el cambio de contraseña
+                    ok, msg = change_password(current_user, pass_actual, pass_nueva)
+                    if ok:
+                        st.success(f"✅ {msg}")
+                    else:
+                        st.error(f"❌ {msg}")
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+        

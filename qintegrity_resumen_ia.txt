@@ -38,6 +38,4 @@ El estudio revisa los nuevos conceptos y criterios para determinar la profundida
 - Consideración de la rugosidad superficial y la impedancia acústica.  
 - Evaluación del impacto ambiental y económico del dragado.
 
-#### ✅ Checklist QA/QC  
-[Verificar calibración de sonares multihaz~~Revisar datos de retrodispersión acústica~~Confirmar densidad y plasticidad de sedimentos~~Calcular UKC y profundidad náutica~~Aplicar corrección TVG y calibración de haz~~Validar mediciones ADCP de sedimentos en suspensión~~Corroborar datos batimétricos con levantamientos de corrientes~~Analizar rugosidad y impedancia de fondo~~Evaluar impacto ambiental del dragado~~Revisar cumplimiento de criterios internacionales de profundidad náutica]
 END_CONTENT-279e21e6-89d9-4b9b-b4a7-b9291eaa7e29__Nuevos_conceptos_en_la_determinación_de_la_profundidad_de_dragado__REVA.pdf
